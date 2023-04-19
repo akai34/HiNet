@@ -42,57 +42,56 @@ def computePSNR(origin,pred):
       return 100
     return 10 * math.log10(255.0**2/mse)
 
+if __name__ == '__main__':
+    net = Model()
+    net.cuda()
+    init_model(net)
+    net = torch.nn.DataParallel(net, device_ids=c.device_ids)
+    params_trainable = (list(filter(lambda p: p.requires_grad, net.parameters())))
+    optim = torch.optim.Adam(params_trainable, lr=c.lr, betas=c.betas, eps=1e-6, weight_decay=c.weight_decay)
+    weight_scheduler = torch.optim.lr_scheduler.StepLR(optim, c.weight_step, gamma=c.gamma)
 
-net = Model()
-net.cuda()
-init_model(net)
-net = torch.nn.DataParallel(net, device_ids=c.device_ids)
-params_trainable = (list(filter(lambda p: p.requires_grad, net.parameters())))
-optim = torch.optim.Adam(params_trainable, lr=c.lr, betas=c.betas, eps=1e-6, weight_decay=c.weight_decay)
-weight_scheduler = torch.optim.lr_scheduler.StepLR(optim, c.weight_step, gamma=c.gamma)
+    load(c.MODEL_PATH + c.suffix)
 
-load(c.MODEL_PATH + c.suffix)
+    net.eval()
 
-net.eval()
+    dwt = common.DWT()
+    iwt = common.IWT()
 
-dwt = common.DWT()
-iwt = common.IWT()
+    with torch.no_grad():
+        for i, data in enumerate(datasets.testloader):
+            data = data.to(device)
+            cover = data[data.shape[0] // 2:, :, :, :]
+            secret = data[:data.shape[0] // 2, :, :, :]
+            cover_input = dwt(cover)
+            secret_input = dwt(secret)
+            input_img = torch.cat((cover_input, secret_input), 1)
 
+            #################
+            #    forward:   #
+            #################
+            output = net(input_img)
+            output_steg = output.narrow(1, 0, 4 * c.channels_in)
+            output_z = output.narrow(1, 4 * c.channels_in, output.shape[1] - 4 * c.channels_in)
+            steg_img = iwt(output_steg)
+            backward_z = gauss_noise(output_z.shape)
 
-with torch.no_grad():
-    for i, data in enumerate(datasets.testloader):
-        data = data.to(device)
-        cover = data[data.shape[0] // 2:, :, :, :]
-        secret = data[:data.shape[0] // 2, :, :, :]
-        cover_input = dwt(cover)
-        secret_input = dwt(secret)
-        input_img = torch.cat((cover_input, secret_input), 1)
+            #################
+            #   backward:   #
+            #################
+            output_rev = torch.cat((output_steg, backward_z), 1)
+            bacward_img = net(output_rev, rev=True)
+            secret_rev = bacward_img.narrow(1, 4 * c.channels_in, bacward_img.shape[1] - 4 * c.channels_in)
+            secret_rev = iwt(secret_rev)
+            cover_rev = bacward_img.narrow(1, 0, 4 * c.channels_in)
+            cover_rev = iwt(cover_rev)
+            resi_cover = (steg_img - cover) * 20
+            resi_secret = (secret_rev - secret) * 20
 
-        #################
-        #    forward:   #
-        #################
-        output = net(input_img)
-        output_steg = output.narrow(1, 0, 4 * c.channels_in)
-        output_z = output.narrow(1, 4 * c.channels_in, output.shape[1] - 4 * c.channels_in)
-        steg_img = iwt(output_steg)
-        backward_z = gauss_noise(output_z.shape)
-
-        #################
-        #   backward:   #
-        #################
-        output_rev = torch.cat((output_steg, backward_z), 1)
-        bacward_img = net(output_rev, rev=True)
-        secret_rev = bacward_img.narrow(1, 4 * c.channels_in, bacward_img.shape[1] - 4 * c.channels_in)
-        secret_rev = iwt(secret_rev)
-        cover_rev = bacward_img.narrow(1, 0, 4 * c.channels_in)
-        cover_rev = iwt(cover_rev)
-        resi_cover = (steg_img - cover) * 20
-        resi_secret = (secret_rev - secret) * 20
-
-        torchvision.utils.save_image(cover, c.IMAGE_PATH_cover + '%.5d.png' % i)
-        torchvision.utils.save_image(secret, c.IMAGE_PATH_secret + '%.5d.png' % i)
-        torchvision.utils.save_image(steg_img, c.IMAGE_PATH_steg + '%.5d.png' % i)
-        torchvision.utils.save_image(secret_rev, c.IMAGE_PATH_secret_rev + '%.5d.png' % i)
+            torchvision.utils.save_image(cover, c.IMAGE_PATH_cover + '%.5d.png' % i)
+            torchvision.utils.save_image(secret, c.IMAGE_PATH_secret + '%.5d.png' % i)
+            torchvision.utils.save_image(steg_img, c.IMAGE_PATH_steg + '%.5d.png' % i)
+            torchvision.utils.save_image(secret_rev, c.IMAGE_PATH_secret_rev + '%.5d.png' % i)
 
 
 
